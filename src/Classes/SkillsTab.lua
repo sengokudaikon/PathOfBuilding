@@ -454,8 +454,9 @@ function SkillsTabClass:LoadSkill(node, skillSetId)
 	socketGroup.mainActiveSkillCalcs = tonumber(node.attrib.mainActiveSkillCalcs) or 1
 	socketGroup.gemList = { }
 	if node.attrib.imbuedSupport and node.attrib.slot then
-		socketGroup.imbuedSupport = node.attrib.imbuedSupport
-		self.controls.imbuedSupport.gemChangeFunc(data.gems[data.gemForBaseName[socketGroup.imbuedSupport:lower().." support"]], nil, nil, socketGroup.slot)
+		local gem = self:ResolveImbuedSupport(node.attrib.imbuedSupport)
+		socketGroup.imbuedSupport = gem and gem.name or node.attrib.imbuedSupport
+		self.controls.imbuedSupport.gemChangeFunc(gem, nil, nil, true, socketGroup.slot)
 	end
 
 	for _, child in ipairs(node) do
@@ -1284,13 +1285,17 @@ function SkillsTabClass:SetDisplayGroup(socketGroup)
 		self.controls.includeInFullDPS.state = socketGroup.includeInFullDPS and socketGroup.enabled
 		self.controls.groupCount:SetText(socketGroup.groupCount or 1)
 		if socketGroup.imbuedSupport then
-			local gemId = data.gems[data.gemForBaseName[socketGroup.imbuedSupport:lower().." support"]]
-			self.controls.imbuedSupport.gemId = gemId
+			local gem = self:ResolveImbuedSupport(socketGroup.imbuedSupport)
+			if gem then
+				socketGroup.imbuedSupport = gem.name
+			end
+			self.controls.imbuedSupport.gemId = gem and "Default:"..gem.id
 			self.controls.imbuedSupport:SetText(socketGroup.imbuedSupport)
-			self.controls.imbuedSupport.inactiveCol = data.skillColorMap[gemId.grantedEffect.color]
+			self.controls.imbuedSupport.inactiveCol = gem and data.skillColorMap[gem.grantedEffect.color] or colorCodes.NORMAL
 		else
 			self.controls.imbuedSupport.gemId = nil
 			self.controls.imbuedSupport:SetText("")
+			self.controls.imbuedSupport.inactiveCol = colorCodes.NORMAL
 		end
 
 		-- Update the gem slot controls
@@ -1465,13 +1470,24 @@ function SkillsTabClass:NewSkillSet(skillSetId)
 	return skillSet
 end
 
+-- Imports and older builds can contain GGG keyword tags or the full support-gem name.
+function SkillsTabClass:ResolveImbuedSupport(supportName)
+	if not supportName then return end
+	local name = escapeGGGString(sanitiseText(supportName)):gsub("^Supported by Level 1 ", ""):lower()
+	local gemId = self.build.data.gemForBaseName[name.." support"] or self.build.data.gemForBaseName[name]
+	local gem = gemId and self.build.data.gems[gemId]
+	if gem and gem.grantedEffect.support then
+		return gem
+	end
+end
+
 function SkillsTabClass:RebuildImbuedSupportBySlot()
 	wipeTable(self.imbuedSupportBySlot)
 	for _, socketGroup in ipairs(self.socketGroupList) do
 		if socketGroup.slot and socketGroup.imbuedSupport then
-			local gemId = data.gemForBaseName[socketGroup.imbuedSupport:lower().." support"]
-			local gem = gemId and data.gems[gemId]
-			if gem and gem.grantedEffect then
+			local gem = self:ResolveImbuedSupport(socketGroup.imbuedSupport)
+			if gem then
+				socketGroup.imbuedSupport = gem.name
 				self.imbuedSupportBySlot[socketGroup.slot] = gem.grantedEffect
 			end
 		end

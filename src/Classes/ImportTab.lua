@@ -1857,8 +1857,9 @@ function ImportTabClass:ImportSocketedItems(item, socketedItems, slotName)
 				local socketGroup = itemSocketGroupList[groupID]
 				t_insert(socketGroup.gemList, gemInstance)
 				if socketedItem.builtInSupport then
-					socketGroup.imbuedSupport = socketedItem.builtInSupport:gsub("Supported by Level 1 ", "")
-					self.build.skillsTab.controls.imbuedSupport.gemChangeFunc(data.gems[data.gemForBaseName[socketGroup.imbuedSupport:lower().." support"]], nil, nil, true, slotName)
+					local gem = self.build.skillsTab:ResolveImbuedSupport(socketedItem.builtInSupport)
+					socketGroup.imbuedSupport = gem and gem.name or escapeGGGString(socketedItem.builtInSupport):gsub("^Supported by Level 1 ", "")
+					self.build.skillsTab.controls.imbuedSupport.gemChangeFunc(gem, nil, nil, true, slotName)
 				end
 			end
 		end
