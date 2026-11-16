@@ -34,15 +34,26 @@ local function addOAuthControls(self)
 	self.oauthErrCode = nil
 	--- @type boolean
 	self.oauthLoading = false
+	self.oauthFetchingCharacters = false
 	-- an array of Character for each realm. Note this is for the character
 	-- list, which will mean that equipment and passives are missing
 	-- https://www.pathofexile.com/developer/docs/reference#type-Character
 	--- @type table<string, table[]>
 	self.characterList = {}
 
-	local function fetchButtonEnabled()
-		local realm = self.controls.accountRealm:GetSelValue()
-		return not (realm and self.characterList[realm.realmCode])
+	local function requestEnabled()
+		return self.usingOauth and self.isAuthorized() and not self.oauthLoading
+			and not (self.rateLimitEndTime and self.rateLimitEndTime > os.time())
+	end
+	local function handleRequestError(err, timeNext)
+		if err == "Response code: 429" then
+			self.rateLimitEndTime = timeNext
+		elseif err == main.api.ERROR_NO_AUTH or err:match("401") then
+			self.oauthErrCode = "Auth token is invalid. Please login again."
+			main.api:ResetDetails()
+		else
+			self.oauthErrCode = err
+		end
 	end
 	local function charImportStatus()
 		if not self.isAuthorized() and not self.oauthTimer then
@@ -63,7 +74,7 @@ local function addOAuthControls(self)
 			end
 			return colorCodes.WARNING .. string.format("You're doing that too fast. Please wait (%d)", timeLeft)
 		elseif self.isAuthorized() and self.oauthLoading then
-			return fetchButtonEnabled() and "Fetching..." or "Importing..."
+			return self.oauthFetchingCharacters and "Fetching..." or "Importing..."
 		elseif self.isAuthorized() then
 			return "Authenticated"
 		end
@@ -87,6 +98,7 @@ local function addOAuthControls(self)
 			main:SaveSettings()
 		end)
 	self.controls.logoutApiButton.shown = function() return self.usingOauth and self.isAuthorized() end
+	self.controls.logoutApiButton.enabled = function() return not self.oauthLoading end
 
 	self.controls.characterImportAnchor = new("Control"):Control({ "TOPLEFT", self.controls.sectionOauthCharImport, "TOPLEFT" },
 		{ labelSpacing, 40, 200, 16 })
@@ -95,7 +107,7 @@ local function addOAuthControls(self)
 	end
 
 	-- realm select
-	local function setLeaguesFromCharList()
+	local function setLeaguesFromCharList(preferredLeague)
 		local currentRealm = self.controls.accountRealm:GetSelValue().realmCode
 		local currentCharacters = currentRealm and self.characterList[currentRealm]
 		if not currentCharacters or #currentCharacters == 0 then
@@ -123,9 +135,9 @@ local function addOAuthControls(self)
 
 		self.controls.charSelectLeague:SetList(ret)
 		self.controls.charSelectLeague.selIndex = nil
-		if main.lastLeague then
+		if preferredLeague or main.lastLeague then
 			for i, v in ipairs(self.controls.charSelectLeague.list) do
-				if v == main.lastLeague then
+				if v == (preferredLeague or main.lastLeague) then
 					self.controls.charSelectLeague:SetSel(i)
 				end
 			end
@@ -136,26 +148,25 @@ local function addOAuthControls(self)
 	end
 
 	local function fetchCharacters()
-		if not main.api.authToken then return end
+		if not requestEnabled() then return end
 		local realm = self.controls.accountRealm:GetSelValue()
+		local selectedLeague = self.controls.charSelectLeague:GetSelValue()
+		local selectedCharacter = self.controls.charSelect:GetSelValue()
 		self.oauthLoading = true
+		self.oauthFetchingCharacters = true
+		self.oauthErrCode = nil
 		local function onResponse(body, err, timeNext)
-			if not err then
-				self.characterList[realm.realmCode] = body.characters
-				setLeaguesFromCharList()
-				self.oauthLoading = false
-				self.oauthErrCode = nil
-				return
-			elseif err == "Response code: 429" then
-				self.rateLimitEndTime = timeNext
-			-- token has been invalidated for some reason
-			elseif err and err:match("401") then
-				self.oauthErrCode = "Auth token is invalid. Please login again."
-				main.api:ResetDetails()
-			else
-				self.oauthErrCode = err
-			end
 			self.oauthLoading = false
+			self.oauthFetchingCharacters = false
+			if not err and body and body.characters then
+				self.characterList[realm.realmCode] = body.characters
+				setLeaguesFromCharList(selectedLeague)
+				if selectedCharacter then
+					self.controls.charSelect:SelByValue(selectedCharacter.label, "label")
+				end
+			else
+				handleRequestError(err or "Could not fetch characters", timeNext)
+			end
 		end
 
 		main.api:DownloadCharacterList(realm.realmCode, onResponse)
@@ -201,17 +212,21 @@ local function addOAuthControls(self)
 			setLeaguesFromCharList()
 		end)
 	self.controls.accountRealm:SelByValue(main.lastRealm or "PC", "id")
+	self.controls.accountRealm.enabled = requestEnabled
 
 	local function fetchTextFunc()
+		if self.oauthFetchingCharacters then
+			return "Fetching..."
+		end
 		local realm = self.controls.accountRealm:GetSelValue()
 		if realm and self.characterList[realm.realmCode] then
-			return "Fetched"
+			return "Refresh Characters"
 		end
 		return "Fetch Characters"
 	end
 	self.controls.accountRealmFetchButton = new("ButtonControl"):ButtonControl({ "LEFT", self.controls.accountRealm, "RIGHT" },
-		{ labelSpacing, 0, 130, 20 }, fetchTextFunc, fetchCharacters)
-	self.controls.accountRealmFetchButton.enabled = fetchButtonEnabled
+		{ labelSpacing, 0, 150, 20 }, fetchTextFunc, fetchCharacters)
+	self.controls.accountRealmFetchButton.enabled = requestEnabled
 
 	-- league select
 	--- @param newLeague string
@@ -228,12 +243,11 @@ local function addOAuthControls(self)
 		{ 0, rowSpacing, 0, 14 }, "^7League:")
 	self.controls.charSelectLeague = new("DropDownControl"):DropDownControl({ "LEFT", self.controls.charSelectLeagueLabel, "RIGHT" },
 		{ labelSpacing, 0, 150, 18 }, nil, onLeagueChange)
+	self.controls.charSelectLeague.enabled = requestEnabled
 	-- character select
 	self.controls.charSelect = new("DropDownControl"):DropDownControl({ "TOPLEFT", self.controls.charSelectLeagueLabel, "BOTTOMLEFT" },
 		{ 0, rowSpacing, 400, 18 }, nil)
-	self.controls.charSelect.enabled = function()
-		return self.usingOauth and self.isAuthorized()
-	end
+	self.controls.charSelect.enabled = requestEnabled
 
 	-- import action controls
 	local function saveDetails(realmId, league, charName)
@@ -244,80 +258,80 @@ local function addOAuthControls(self)
 		main.lastCharacterHash = common.sha1(charName)
 		self.lastCharacterHash = common.sha1(charName)
 	end
+	local function characterImportEnabled()
+		return requestEnabled() and self.controls.charSelect:GetSelValue() ~= nil
+	end
+	local function importCharacter(importTree, importItems)
+		if not characterImportEnabled() then return end
+		local realm = self.controls.accountRealm:GetSelValue()
+		local league = self.controls.charSelectLeague:GetSelValue()
+		local selectedName = self.controls.charSelect:GetSelValue().label
+		local deleteJewels = self.controls.charImportTreeClearJewels.state
+		local clearItems = self.controls.charImportItemsClearItems.state
+		local clearSkills = self.controls.charImportItemsClearSkills.state
+		local ignoreWeaponSwap = self.controls.charImportItemsIgnoreWeaponSwap.state
+		local function downloadCharacter()
+			if not requestEnabled() then return end
+			saveDetails(realm.id, league, selectedName)
+			self.oauthLoading = true
+			self.oauthErrCode = nil
+			main.api:DownloadCharacter(realm.realmCode, selectedName, function(data, errMsg, timeNext)
+				if self.build.importTab ~= self then
+					self.oauthLoading = false
+					return
+				end
+				if not errMsg and data and data.character then
+					if importTree then
+						self:ImportPassiveTreeAndJewels(data.character, deleteJewels)
+					end
+					if importItems then
+						self:ImportItemsAndSkills(data.character, clearItems, clearSkills, ignoreWeaponSwap)
+					end
+				else
+					handleRequestError(errMsg or "Could not import character", timeNext)
+				end
+				self.oauthLoading = false
+			end)
+		end
+		if importTree and self.build.spec:CountAllocNodes() > 0 then
+			local message = importItems
+				and "Refreshing this character will overwrite your current tree and import its jewels, items and skills."
+				or "Importing the passive tree will overwrite your current tree."
+			main:OpenConfirmPopup("Character Import", message, importItems and "Refresh" or "Import", downloadCharacter)
+		else
+			downloadCharacter()
+		end
+	end
+	self.controls.charRefresh = new("ButtonControl"):ButtonControl({ "LEFT", self.controls.charSelect, "RIGHT" },
+		{ labelSpacing, 0, 140, 20 }, "Refresh Character", function()
+			importCharacter(true, true)
+		end)
+	self.controls.charRefresh.enabled = characterImportEnabled
+	self.controls.charRefresh.tooltipText = "Download this character again and import its passive tree, jewels, items and skills using the import options below."
 	self.controls.charImportHeader = new("LabelControl"):LabelControl({ "TOPLEFT", self.controls.charSelect, "BOTTOMLEFT" },
 		{ 0, rowSpacing, 200, 16 }, "^7Import:")
 	self.controls.charImportTree = new("ButtonControl"):ButtonControl({ "LEFT", self.controls.charImportHeader, "RIGHT" },
 		{ labelSpacing, 0, 170, 20 }, "Passive Tree and Jewels", function()
-			local realm = self.controls.accountRealm:GetSelValue()
-			local league = self.controls.charSelectLeague:GetSelValue()
-			local selectedName = self.controls.charSelect:GetSelValue().label
-
-			saveDetails(realm.id, league, selectedName)
-			local deleteJewels = self.controls.charImportTreeClearJewels.state
-			local function importHandler(data, errMsg)
-				if data and data.character then
-					self.oauthErrCode = nil
-					self:ImportPassiveTreeAndJewels(data.character, deleteJewels)
-				else
-					if errMsg then
-						self.oauthErrCode = "Could not import: " .. errMsg
-					else
-						self.oauthErrCode = "Could not import character"
-					end
-				end
-				self.oauthLoading = false
-			end
-			if self.build.spec:CountAllocNodes() > 0 then
-				main:OpenConfirmPopup("Character Import", "Importing the passive tree will overwrite your current tree.",
-					"Import", function()
-						self.oauthLoading = true
-						main.api:DownloadCharacter(realm.realmCode, selectedName, importHandler)
-					end)
-			else
-				self.oauthLoading = true
-				main.api:DownloadCharacter(realm.realmCode, selectedName, importHandler)
-			end
+			importCharacter(true, false)
 		end)
-	self.controls.charImportTree.enabled = function()
-		return self.usingOauth and self.isAuthorized() and self.controls.charSelect:GetSelValue()
-	end
+	self.controls.charImportTree.enabled = characterImportEnabled
 	self.controls.charImportTreeClearJewels = new("CheckBoxControl"):CheckBoxControl({ "LEFT", self.controls.charImportTree, "RIGHT" },
 		{ 90, 0, 18 }, "Delete jewels:", nil, "Delete all equipped jewels when importing.", true)
 	self.controls.charImportItems = new("ButtonControl"):ButtonControl({ "TOPLEFT", self.controls.charImportTree, "BOTTOMLEFT" },
 		{ 0, rowSpacing, 110, 20 }, "Items and Skills", function()
-			local realm = self.controls.accountRealm:GetSelValue()
-			local league = self.controls.charSelectLeague:GetSelValue()
-			local selectedName = self.controls.charSelect:GetSelValue().label
-
-			saveDetails(realm.id, league, selectedName)
-
-			self.oauthLoading = true
-			main.api:DownloadCharacter(realm.realmCode, selectedName, function(data, errMsg)
-				local clearItems = self.controls.charImportItemsClearItems.state
-				local clearSkills = self.controls.charImportItemsClearSkills.state
-				local ignoreWeaponSwap = self.controls.charImportItemsIgnoreWeaponSwap.state
-				if data and data.character then
-					self.oauthErrCode = nil
-					self:ImportItemsAndSkills(data.character, clearItems, clearSkills, ignoreWeaponSwap)
-				else
-					if errMsg then
-						self.oauthErrCode = "Could not import: " .. errMsg
-					else
-						self.oauthErrCode = "Could not import character"
-					end
-				end
-				self.oauthLoading = false
-			end)
+			importCharacter(false, true)
 		end)
-	self.controls.charImportItems.enabled = function()
-		return self.usingOauth and self.isAuthorized() and self.controls.charSelect:GetSelValue()
-	end
+	self.controls.charImportItems.enabled = characterImportEnabled
 	self.controls.charImportItemsClearSkills = new("CheckBoxControl"):CheckBoxControl({ "LEFT", self.controls.charImportItems, "RIGHT" },
 		{ 85, 0, 18 }, "Delete skills:", nil, "Delete all existing skills when importing.", true)
 	self.controls.charImportItemsClearItems = new("CheckBoxControl"):CheckBoxControl({ "LEFT", self.controls.charImportItems, "RIGHT" },
 		{ 220, 0, 18 }, "Delete equipment:", nil, "Delete all equipped items when importing.", true)
 	self.controls.charImportItemsIgnoreWeaponSwap = new("CheckBoxControl"):CheckBoxControl({ "LEFT", self.controls.charImportItems,
 		"RIGHT" }, { 380, 0, 18 }, "Ignore weapon swap:", nil, "Ignore items and skills in weapon swap.", false)
+	self.controls.charImportTreeClearJewels.enabled = requestEnabled
+	self.controls.charImportItemsClearItems.enabled = requestEnabled
+	self.controls.charImportItemsClearSkills.enabled = requestEnabled
+	self.controls.charImportItemsIgnoreWeaponSwap.enabled = requestEnabled
 end
 local function addAccountNameControls(self)
 	self.charImportMode = "GETACCOUNTNAME"
