@@ -208,7 +208,7 @@ function ItemsTabClass:ItemsTab(build)
 	end
 	prevSlot = self.controls.wickermanHeader
 	for _, slotName in ipairs({ "Head", "Body", "Arm", "Leg" }) do
-		local slot = new("ItemSlotControl"):ItemSlotControl({"TOPLEFT",prevSlot,"BOTTOMLEFT"}, 0, 2, self, slotName)
+		local slot = new("VisceraSlotControl"):VisceraSlotControl({"TOPLEFT",prevSlot,"BOTTOMLEFT"}, 0, 2, self, slotName)
 		slot.shown = self.controls.wickermanHeader.shown
 		addSlot(slot)
 	end

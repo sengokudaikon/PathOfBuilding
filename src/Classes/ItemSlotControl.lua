@@ -20,12 +20,7 @@ local ItemSlotClass = newClass("ItemSlotControl", "DropDownControl")
 ---@param nodeId integer?
 function ItemSlotClass:ItemSlotControl(anchor, x, y, itemsTab, slotName, slotLabel, nodeId)
 	self:DropDownControl(anchor, { x, y, 310, 20 }, {}, function(index, value)
-		if self.items[index] ~= self.selItemId then
-			self:SetSelItemId(self.items[index])
-			itemsTab:PopulateSlots()
-			itemsTab:AddUndoState()
-			itemsTab.build.buildFlag = true
-		end
+		self:SelectItem(index)
 	end)
 	self.anchor.collapse = true
 	self.enabled = function()
@@ -56,7 +51,7 @@ function ItemSlotClass:ItemSlotControl(anchor, x, y, itemsTab, slotName, slotLab
 	end
 	self.abyssalSocketList = { }
 	self.tooltipFunc = function(tooltip, mode, index, itemId)
-		local item = itemsTab.items[self.items[index]]
+		local item = self:GetItemForIndex(index)
 		-- not selControl.ListControl allows hover when All Items or Unique/Rare DB Sections are in focus
 		if main.popups[1] or mode == "OUT" or not item or (not self.dropped and itemsTab.selControl and itemsTab.selControl ~= self.controls.activate and not itemsTab.selControl.ListControl) then
 			tooltip:Clear(true)
@@ -67,6 +62,26 @@ function ItemSlotClass:ItemSlotControl(anchor, x, y, itemsTab, slotName, slotLab
 	self.label = slotLabel or slotName
 	self.nodeId = nodeId
 	return self
+end
+
+function ItemSlotClass:GetItemForIndex(index)
+	return self.itemsTab.items[self.items[index]]
+end
+
+function ItemSlotClass:SelectItem(index)
+	local itemId = self.items[index]
+	if itemId then
+		self:EquipItem(itemId)
+	end
+end
+
+function ItemSlotClass:EquipItem(itemId)
+	if itemId ~= self.selItemId then
+		self:SetSelItemId(itemId)
+		self.itemsTab:PopulateSlots()
+		self.itemsTab:AddUndoState()
+		self.itemsTab.build.buildFlag = true
+	end
 end
 
 function ItemSlotClass:SetSelItemId(selItemId)
@@ -175,8 +190,7 @@ function ItemSlotClass:OnHoverKeyUp(key)
 	if itemLib.wiki.matchesKey(key) then
 		local index = self.DropDownControl:GetHoverIndex()
 		if index then
-			local itemIndex = self.items[index]
-			local item = self.itemsTab.items[itemIndex]
+			local item = self:GetItemForIndex(index)
 
 			if item then
 				itemLib.wiki.openItem(item)
